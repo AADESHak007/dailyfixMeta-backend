@@ -1,0 +1,1 @@
+{"root":["./src/server.ts","./src/config/matrix.ts","./src/controllers/authcontroller.ts","./src/controllers/matrixcontroller.ts","./src/middleware/authmiddleware.ts","./src/routes/authroutes.ts","./src/routes/matrixroutes.ts","./src/services/matrixservice.ts","./src/socket/socketmanager.ts","./src/utils/matrixclient.ts"],"version":"5.8.2"}

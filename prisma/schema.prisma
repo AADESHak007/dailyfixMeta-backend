@@ -1,0 +1,58 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int       @id @default(autoincrement())
+  username          String    @unique
+  password          String
+  matrixUserId      String?   @unique
+  matrixAccessToken String?
+  matrixDeviceId    String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  sessions          Session[]
+  settings          Settings?
+}
+
+
+model Session {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Settings {
+  id             Int     @id @default(autoincrement())
+  userId         Int     @unique
+  notification   Boolean @default(true)
+  darkMode       Boolean @default(false)
+  messagePreview Boolean @default(true)
+  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MatrixRoom {
+  id               Int      @id @default(autoincrement())
+  roomId           String   @unique
+  name             String?
+  avatarUrl        String?
+  lastMessageTime  DateTime @default(now())
+  isEncrypted      Boolean  @default(false)
+  isWhatsAppBridge Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
