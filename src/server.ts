@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { initSocketServer } from './socket/socketManager.js';
 import authRoutes from './routes/authRoutes.js';
 import matrixRoutes from './routes/matrixRoutes.js';
+import instagramRoutes from './routes/instagramRoutes.js';
 
 // Load environment variables
 dotenv.config();
@@ -30,6 +31,7 @@ app.use(express.json());
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/matrix', matrixRoutes);
+app.use('/api/instagram', instagramRoutes);
 
 // Health check
 app.get('/', (req, res) => {
