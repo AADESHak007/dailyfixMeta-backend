@@ -1,6 +1,6 @@
 // import * as sdk from 'matrix-js-sdk';
 import { PrismaClient } from '@prisma/client';
-import { createMatrixClient } from '../utils/matrixClient.js';
+import { createMatrixClient, ExtendedMatrixClient } from '../utils/matrixClient.js';
 import config from '../config/matrix.js';
 import { EventEmitter } from 'events';
 
@@ -284,6 +284,26 @@ export const findOrCreateMetaBotRoom = async (userId: number) => {
       invite: [META_BOT_ID],
       is_direct: true,
       visibility: 'private' as any,
+      initial_state: [{
+        type: 'm.room.encryption',
+        state_key: '',
+        content: {
+          algorithm: 'm.megolm.v1.aes-sha2'
+        }
+      }]
+    });
+    
+    // Wait for encryption to be set up
+    await new Promise<void>((resolve) => {
+      const checkEncryption = () => {
+        const room = matrixClient.getRoom(createRoomResponse.room_id);
+        if (room && room.currentState.getStateEvents('m.room.encryption').length > 0) {
+          resolve();
+        } else {
+          setTimeout(checkEncryption, 1000);
+        }
+      };
+      checkEncryption();
     });
     
     // Wait for the bot to join
@@ -326,7 +346,8 @@ export const sendInstagramLoginCommand = async (userId: number, roomId: string) 
       {
         msgtype: 'm.text',
         body: '!ig login'
-      }
+      },
+      undefined // txnId parameter
     );
     
     return { success: true, eventId: result.event_id };
@@ -513,5 +534,309 @@ export const getInstagramLoginStatus = async (userId: number) => {
   } catch (error) {
     console.error('Error checking Instagram login status:', error);
     throw new Error('Failed to check Instagram login status');
+  }
+};
+
+export const sendEncryptedCurlCommand = async (userId: number, roomId: string, curlCommand: string) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+    
+    if (!user || !user.matrixAccessToken || !user.matrixUserId) {
+      throw new Error('User not authenticated with Matrix');
+    }
+    
+    // Load Olm library
+    if (!global.Olm) {
+      try {
+        // Import Olm dynamically
+        const Olm = await import('@matrix-org/olm');
+        global.Olm = Olm;
+        console.log('Olm library loaded successfully');
+      } catch (error) {
+        console.error('Failed to load Olm library:', error);
+      }
+    }
+    
+    // Create a matrix client with our extended type
+    const matrixClient: ExtendedMatrixClient = createMatrixClient({
+      baseUrl: config.baseUrl,
+      accessToken: user.matrixAccessToken ?? undefined,
+      userId: user.matrixUserId ?? undefined,
+      deviceId: user.matrixDeviceId ?? undefined
+    });
+    
+    // Start the client without trying to initialize crypto
+    await matrixClient.startClient({ initialSyncLimit: 1 });
+    
+    // Wait for the client to be ready
+    await new Promise<void>((resolve) => {
+      const onSync = (state: string) => {
+        if (state === 'PREPARED') {
+          matrixClient.removeListener('sync' as any, onSync);
+          resolve();
+        }
+      };
+      matrixClient.on('sync' as any, onSync);
+    });
+    
+    // Send the message with error handling
+    try {
+      // Try using sendMessage which is a higher-level method that handles encryption automatically
+      console.log(`Attempting to send message to room ${roomId}`);
+      
+      if (matrixClient.sendMessage) {
+        const result = await matrixClient.sendMessage(roomId, {
+          msgtype: 'm.text',
+          body: curlCommand
+        });
+        
+        matrixClient.stopClient();
+        return { success: true, eventId: result.event_id };
+      } else {
+        console.log('sendMessage method not available, trying alternatives');
+        throw new Error('sendMessage method not available');
+      }
+    } catch (sendError: any) {
+      console.error('Error sending message with sendMessage:', sendError);
+      
+      // Fallback to sendTextMessage (another alternative to sendEvent)
+      try {
+        console.log('Falling back to sendTextMessage');
+        
+        if (matrixClient.sendTextMessage) {
+          const fallbackResult = await matrixClient.sendTextMessage(roomId, curlCommand);
+          matrixClient.stopClient();
+          return { 
+            success: true, 
+            eventId: fallbackResult.event_id,
+            warning: 'Sent with fallback method'
+          };
+        } else {
+          console.log('sendTextMessage method not available, trying another alternative');
+          throw new Error('sendTextMessage method not available');
+        }
+      } catch (fallbackError: any) {
+        console.error('Fallback to sendTextMessage also failed:', fallbackError);
+        
+        // Last resort - try sending a plain event
+        try {
+          console.log('Attempting last resort: plain sendEvent');
+          const lastResortResult = await matrixClient.sendEvent(
+            roomId,
+            'm.room.message' as any,
+            {
+              msgtype: 'm.text',
+              body: curlCommand
+            },
+            undefined
+          );
+          
+          matrixClient.stopClient();
+          return { 
+            success: true, 
+            eventId: lastResortResult.event_id,
+            warning: 'Sent as unencrypted message - encryption failed'
+          };
+        } catch (lastError: any) {
+          console.error('All send attempts failed:', lastError);
+          throw new Error(`Failed to send message after multiple attempts: ${lastError.message}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in sendEncryptedCurlCommand:', error);
+    throw error;
+  }
+};
+
+// Add this new function that uses Rust crypto
+export const sendRustCurlCommand = async (userId: number, roomId: string, curlCommand: string) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+    
+    if (!user || !user.matrixAccessToken || !user.matrixUserId) {
+      throw new Error('User not authenticated with Matrix');
+    }
+    
+    console.log('Creating Matrix client for encrypted communication...');
+    
+    // Create a matrix client with our extended type
+    const matrixClient: ExtendedMatrixClient = createMatrixClient({
+      baseUrl: config.baseUrl,
+      accessToken: user.matrixAccessToken ?? undefined,
+      userId: user.matrixUserId ?? undefined,
+      deviceId: user.matrixDeviceId ?? undefined
+    });
+    
+    // Initialize Rust Crypto - this is the key difference
+    // We don't need to manually load Olm anymore
+    if (matrixClient.initRustCrypto) {
+      console.log('Initializing Rust crypto...');
+      try {
+        // Use in-memory store for Node.js
+        await matrixClient.initRustCrypto({ useIndexedDB: false });
+        console.log('Rust crypto initialized successfully');
+      } catch (cryptoError) {
+        console.error('Failed to initialize Rust crypto:', cryptoError);
+        throw new Error('Failed to initialize encryption');
+      }
+    } else {
+      console.warn('Rust crypto not available on this client');
+    }
+    
+    // Start the client
+    console.log('Starting Matrix client...');
+    await matrixClient.startClient({ initialSyncLimit: 1 });
+    
+    // Wait for the client to be ready
+    await new Promise<void>((resolve) => {
+      const onSync = (state: string) => {
+        if (state === 'PREPARED') {
+          matrixClient.removeListener('sync' as any, onSync);
+          resolve();
+        }
+      };
+      matrixClient.on('sync' as any, onSync);
+    });
+    
+    console.log('Matrix client ready');
+    
+    // Verify room is encrypted
+    const room = matrixClient.getRoom(roomId);
+    if (!room) {
+      throw new Error(`Room ${roomId} not found`);
+    }
+    
+    const isEncrypted = room.currentState.getStateEvents('m.room.encryption').length > 0;
+    console.log(`Room ${roomId} is${isEncrypted ? '' : ' not'} encrypted`);
+    
+    // Send the message
+    try {
+      console.log(`Sending ${isEncrypted ? 'encrypted' : 'unencrypted'} message to room ${roomId}`);
+      const result = await matrixClient.sendEvent(
+        roomId,
+        'm.room.message' as any,
+        {
+          msgtype: 'm.text',
+          body: curlCommand
+        },
+        undefined
+      );
+      
+      matrixClient.stopClient();
+      return { 
+        success: true, 
+        eventId: result.event_id,
+        encrypted: isEncrypted
+      };
+    } catch (sendError: any) {
+      console.error('Error sending message:', sendError);
+      
+      // Inside the catch block in sendRustCurlCommand
+      // Replace the fallback to use sendEncryptedCurlCommand
+      if (isEncrypted && sendError.message && sendError.message.includes('encryption')) {
+        console.log('Encryption error, trying fallback with plain event...');
+        
+        try {
+          // Try sending as a plain unencrypted message
+          const fallbackResult = await matrixClient.sendEvent(
+            roomId,
+            'm.room.message' as any,
+            {
+              msgtype: 'm.text',
+              body: curlCommand
+            },
+            undefined
+          );
+          
+          matrixClient.stopClient();
+          return { 
+            success: true, 
+            eventId: fallbackResult.event_id,
+            encrypted: false
+          };
+        } catch (fallbackError) {
+          console.error('Fallback also failed:', fallbackError);
+          matrixClient.stopClient();
+          throw fallbackError;
+        }
+      }
+      
+      matrixClient.stopClient();
+      throw sendError;
+    }
+  } catch (error) {
+    console.error('Error in sendRustCurlCommand:', error);
+    throw error;
+  }
+};
+
+export const sendUnencryptedCurlCommand = async (userId: number, roomId: string, curlCommand: string) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+    
+    if (!user || !user.matrixAccessToken || !user.matrixUserId) {
+      throw new Error('User not authenticated with Matrix');
+    }
+    
+    console.log('Creating Matrix client for unencrypted communication...');
+    
+    // Create a matrix client with our extended type
+    const matrixClient: ExtendedMatrixClient = createMatrixClient({
+      baseUrl: config.baseUrl,
+      accessToken: user.matrixAccessToken ?? undefined,
+      userId: user.matrixUserId ?? undefined,
+      deviceId: user.matrixDeviceId ?? undefined
+    });
+    
+    // Start the client without initializing crypto
+    console.log('Starting Matrix client...');
+    await matrixClient.startClient({ initialSyncLimit: 1 });
+    
+    // Wait for the client to be ready
+    await new Promise<void>((resolve) => {
+      const onSync = (state: string) => {
+        if (state === 'PREPARED') {
+          matrixClient.removeListener('sync' as any, onSync);
+          resolve();
+        }
+      };
+      matrixClient.on('sync' as any, onSync);
+    });
+    
+    console.log('Matrix client ready');
+    
+    try {
+      // Send a simple unencrypted message
+      console.log(`Sending unencrypted message to room ${roomId}`);
+      const result = await matrixClient.sendEvent(
+        roomId,
+        'm.room.message' as any,
+        {
+          msgtype: 'm.text',
+          body: curlCommand
+        },
+        undefined
+      );
+      
+      matrixClient.stopClient();
+      return { 
+        success: true, 
+        eventId: result.event_id 
+      };
+    } catch (sendError) {
+      console.error('Error sending unencrypted message:', sendError);
+      matrixClient.stopClient();
+      throw sendError;
+    }
+  } catch (error) {
+    console.error('Error in sendUnencryptedCurlCommand:', error);
+    throw error;
   }
 };

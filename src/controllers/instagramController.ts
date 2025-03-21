@@ -5,7 +5,9 @@ import {
   startListeningForMetaBotResponses,
   stopListeningForMetaBotResponses,
   syncMatrixRooms,
-  getInstagramLoginStatus
+  getInstagramLoginStatus,
+  sendUnencryptedCurlCommand,
+  sendRustCurlCommand
 } from '../services/matrixService.js';
 import { createMatrixClient } from '../utils/matrixClient.js';
 import { parseCurlCommand } from '../utils/curlParser.js';
@@ -55,138 +57,36 @@ export const sendCurlCommand = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
     const { curlCommand, roomId } = req.body;
     
-    if (!curlCommand) {
-      res.status(400).json({
+    if (!curlCommand || !roomId) {
+      return res.status(400).json({
         success: false,
-        message: 'Curl command is required'
+        message: 'Curl command and room ID are required'
       });
-      return;
     }
-    
-    if (!roomId) {
-      res.status(400).json({
-        success: false,
-        message: 'Room ID is required'
-      });
-      return;
-    }
-    
-    console.log(`[CURL] Processing curl command for room ${roomId}`);
-    
-    // Parse the curl command to structured format
+
+    // Try with the new Rust crypto method first
     try {
-      // Try to use the structured approach if possible
-      const parsedCommand = parseCurlCommand(curlCommand);
-      console.log(`[CURL] Successfully parsed command for ${parsedCommand.url}`);
-      
-      // Get user's Matrix credentials
-      const user = await prisma.user.findUnique({
-        where: { id: userId }
-      });
-      
-      if (!user || !user.matrixAccessToken || !user.matrixUserId) {
-        throw new Error('User not authenticated with Matrix');
-      }
-      
-      // Create Matrix client
-      const matrixClient = createMatrixClient({
-        baseUrl: config.baseUrl,
-        accessToken: user.matrixAccessToken ?? undefined,
-        userId: user.matrixUserId ?? undefined,
-        deviceId: user.matrixDeviceId ?? undefined
-      });
-      
-      // Build the curl command from structured data
-      let formattedCurlCommand = `curl '${parsedCommand.url}'`;
-      
-      // Add method if specified (default is GET)
-      if (parsedCommand.method && parsedCommand.method.toUpperCase() !== 'GET') {
-        formattedCurlCommand += ` -X ${parsedCommand.method.toUpperCase()}`;
-      }
-      
-      // Add headers
-      if (parsedCommand.headers && typeof parsedCommand.headers === 'object') {
-        Object.entries(parsedCommand.headers).forEach(([key, value]) => {
-          formattedCurlCommand += ` \\\n  -H '${key}: ${value}'`;
-        });
-      }
-      
-      // Add cookies
-      if (parsedCommand.cookies) {
-        formattedCurlCommand += ` \\\n  -b '${parsedCommand.cookies}'`;
-      }
-      
-      // Add data
-      if (parsedCommand.data) {
-        if (typeof parsedCommand.data === 'object') {
-          // For form data or JSON
-          if (parsedCommand.headers && 
-              parsedCommand.headers['content-type'] && 
-              parsedCommand.headers['content-type'].includes('application/json')) {
-            // JSON data
-            formattedCurlCommand += ` \\\n  --data '${JSON.stringify(parsedCommand.data)}'`;
-          } else {
-            // Form data
-            formattedCurlCommand += ` \\\n  --data-raw '${parsedCommand.data}'`;
-          }
-        } else if (typeof parsedCommand.data === 'string') {
-          // Raw data string
-          formattedCurlCommand += ` \\\n  --data-raw '${parsedCommand.data}'`;
-        }
-      }
-      
-      console.log(`[CURL] Built command: ${formattedCurlCommand.substring(0, 100)}...`);
-      
-      // Send the curl command
-      const result = await matrixClient.sendEvent(
-        roomId,
-        'm.room.message' as any,
-        {
-          msgtype: 'm.text',
-          body: formattedCurlCommand
-        }
-      );
+      console.log('Attempting to send curl command with Rust encryption...');
+      const result = await sendRustCurlCommand(userId, roomId, curlCommand);
       
       res.json({
         success: true,
-        message: 'Structured curl command sent successfully',
-        eventId: result.event_id,
-        mode: 'structured'
+        message: result.encrypted ? 'Encrypted curl command sent successfully' : 'Curl command sent successfully',
+        eventId: result.eventId,
+        encrypted: result.encrypted
       });
-    } catch (parseError) {
-      console.warn('[CURL] Failed to parse curl command, falling back to raw approach:', parseError);
+    } catch (rustError) {
+      console.error('Rust crypto approach failed:', rustError);
       
-      // Fall back to the raw approach if parsing fails
-      const user = await prisma.user.findUnique({
-        where: { id: userId }
-      });
-      
-      if (!user || !user.matrixAccessToken || !user.matrixUserId) {
-        throw new Error('User not authenticated with Matrix');
-      }
-      
-      const matrixClient = createMatrixClient({
-        baseUrl: config.baseUrl,
-        accessToken: user.matrixAccessToken ?? undefined,
-        userId: user.matrixUserId ?? undefined,
-        deviceId: user.matrixDeviceId ?? undefined
-      });
-      
-      // Send the raw curl command
-      const result = await matrixClient.sendEvent(
-        roomId,
-        'm.room.message' as any,
-        {
-          msgtype: 'm.text',
-          body: curlCommand
-        }
-      );
+      // Fall back to unencrypted method
+      console.log('Falling back to unencrypted method...');
+      const fallbackResult = await sendUnencryptedCurlCommand(userId, roomId, curlCommand);
       
       res.json({
         success: true,
-        message: 'Curl command sent successfully (raw mode)',
-        eventId: result.event_id,
-        mode: 'raw'
+        message: 'Curl command sent successfully (unencrypted fallback)',
+        eventId: fallbackResult.eventId,
+        encrypted: false
       });
     }
   } catch (error) {
@@ -282,38 +182,31 @@ export const sendStructuredCurlCommand = async (req: Request, res: Response) => 
     
     console.log(`[CURL] Built command: ${curlCommand.substring(0, 100)}...`);
     
-    // Get user's Matrix credentials
-    const user = await prisma.user.findUnique({
-      where: { id: userId }
-    });
-    
-    if (!user || !user.matrixAccessToken || !user.matrixUserId) {
-      throw new Error('User not authenticated with Matrix');
+    // Try with the new Rust crypto method first
+    try {
+      console.log('Attempting to send structured curl command with Rust encryption...');
+      const result = await sendRustCurlCommand(userId, roomId, curlCommand);
+      
+      res.json({
+        success: true,
+        message: result.encrypted ? 'Encrypted curl command sent successfully' : 'Curl command sent successfully',
+        eventId: result.eventId,
+        encrypted: result.encrypted
+      });
+    } catch (rustError) {
+      console.error('Rust crypto approach failed:', rustError);
+      
+      // Fall back to unencrypted method
+      console.log('Falling back to unencrypted method...');
+      const fallbackResult = await sendUnencryptedCurlCommand(userId, roomId, curlCommand);
+      
+      res.json({
+        success: true,
+        message: 'Curl command sent successfully (unencrypted fallback)',
+        eventId: fallbackResult.eventId,
+        encrypted: false
+      });
     }
-    
-    // Create Matrix client
-    const matrixClient = createMatrixClient({
-      baseUrl: config.baseUrl,
-      accessToken: user.matrixAccessToken ?? undefined,
-      userId: user.matrixUserId ?? undefined,
-      deviceId: user.matrixDeviceId ?? undefined
-    });
-    
-    // Send the curl command
-    const result = await matrixClient.sendEvent(
-      roomId,
-      'm.room.message' as any,
-      {
-        msgtype: 'm.text',
-        body: curlCommand
-      }
-    );
-    
-    res.json({
-      success: true,
-      message: 'Curl command sent successfully',
-      eventId: result.event_id
-    });
   } catch (error) {
     console.error('[CURL] Error sending structured curl command:', error);
     res.status(500).json({
