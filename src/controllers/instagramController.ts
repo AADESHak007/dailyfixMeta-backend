@@ -51,7 +51,7 @@ export const connectToInstagram = async (req: Request, res: Response) => {
   }
 };
 
-// Updated function to send a curl command to the metabot room with improved handling
+// Updated function to send a curl command to the metabot room with encryption
 export const sendCurlCommand = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
@@ -64,33 +64,23 @@ export const sendCurlCommand = async (req: Request, res: Response) => {
       });
     }
 
-    // Try with the new Rust crypto method first
+    console.log(`Sending curl command to room ${roomId} (encrypted with Rust crypto)...`);
+    console.log(`Curl command: ${curlCommand.substring(0, 100)}...`);
+    
+    // Send with Rust encryption - no fallback to unencrypted
     try {
-      console.log('Attempting to send curl command with Rust encryption...');
       const result = await sendRustCurlCommand(userId, roomId, curlCommand);
       
       res.json({
         success: true,
-        message: result.encrypted ? 'Encrypted curl command sent successfully' : 'Curl command sent successfully',
-        eventId: result.eventId,
-        encrypted: result.encrypted
+        message: 'Curl command sent successfully'
       });
-    } catch (rustError) {
-      console.error('Rust crypto approach failed:', rustError);
-      
-      // Fall back to unencrypted method
-      console.log('Falling back to unencrypted method...');
-      const fallbackResult = await sendUnencryptedCurlCommand(userId, roomId, curlCommand);
-      
-      res.json({
-        success: true,
-        message: 'Curl command sent successfully (unencrypted fallback)',
-        eventId: fallbackResult.eventId,
-        encrypted: false
-      });
+    } catch (error) {
+      console.error('Error sending encrypted curl command:', error);
+      throw new Error('Failed to send encrypted curl command');
     }
   } catch (error) {
-    console.error('[CURL] Error sending curl command:', error);
+    console.error('Error sending curl command:', error);
     res.status(500).json({
       success: false,
       message: error instanceof Error ? error.message : 'Failed to send curl command'

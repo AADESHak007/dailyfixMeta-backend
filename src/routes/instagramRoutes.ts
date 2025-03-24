@@ -4,22 +4,22 @@ import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// Apply authentication middleware to all routes
-router.use(protect);
-
-// Type-safe middleware creator
-const createHandler = (handler: Function) => {
-  return (req: express.Request, res: express.Response) => {
-    return handler(req, res);
+// Create a handler that catches errors
+const createHandler = (fn: Function) => {
+  return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      await fn(req, res);
+    } catch (error) {
+      next(error);
+    }
   };
 };
 
-// Instagram routes
-router.post('/connect', createHandler(instagramController.connectToInstagram));
-router.post('/send-curl', createHandler(instagramController.sendCurlCommand));
-router.post('/send-structured-curl', createHandler(instagramController.sendStructuredCurlCommand));
-router.get('/login-url', createHandler(instagramController.getLoginUrl));
-router.get('/status', createHandler(instagramController.checkInstagramStatus));
-router.post('/disconnect', createHandler(instagramController.disconnectFromInstagram));
+// Core Instagram routes - all protected by auth middleware
+router.post('/connect', protect, createHandler(instagramController.connectToInstagram));
+router.get('/status', protect, createHandler(instagramController.checkInstagramStatus));
+router.post('/disconnect', protect, createHandler(instagramController.disconnectFromInstagram));
+router.post('/curl', protect, createHandler(instagramController.sendCurlCommand));
+router.get('/login-url', protect, createHandler(instagramController.getLoginUrl));
 
 export default router;
